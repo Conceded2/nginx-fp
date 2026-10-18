@@ -1,0 +1,23 @@
+name: test
+on:
+  push:
+    branches-ignore: [main]
+    paths:
+      - "**.sh"
+      - Dockerfile
+      - .nofp
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build
+        uses: ./
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ env.nginx_version }}${{ env.fp_state }}-test
+          path: /home/runner/work/_temp/_github_home/nginx.deb
