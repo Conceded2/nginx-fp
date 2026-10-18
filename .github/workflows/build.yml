@@ -1,0 +1,50 @@
+name: build
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "**.sh"
+      - Dockerfile
+      - .nofp
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build
+        uses: ./
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ env.nginx_version }}${{ env.fp_state }}
+          path: /home/runner/work/_temp/_github_home/nginx.deb
+      - name: Release
+        if: ${{ env.change }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: /home/runner/work/_temp/_github_home/nginx.deb
+          fail_on_unmatched_files: true
+          body: ${{ env.release_note }}
+          tag_name: v${{ env.nginx_version }}${{ env.fp_state }}
+          make_latest: true
+          generate_release_notes: false
+      - name: Update
+        if: ${{ env.change }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Update hash and version
+      - name: Fingerprint missing
+        if: ${{ env.fp_tier == '3' && env.change }}
+        run: |
+          echo "::error title=JA3/JA4 fingerprint omitted::nginx ${{ env.nginx_version }} had no applicable phuslu patch and was published as v${{ env.nginx_version }}${{ env.fp_state }}. Check https://github.com/phuslu/nginx-ssl-fingerprint/tree/master/patches"
+          exit 1
