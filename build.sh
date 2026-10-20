@@ -93,13 +93,20 @@ sed -i 's|CFLAGS=""|CFLAGS="-Wno-error"|g' rules
 sed -i 's|--sbin-path=/usr/sbin/nginx|--sbin-path=/usr/sbin/nginx --add-module=$(CURDIR)/debian/modules/ngx_brotli --add-module=$(CURDIR)/debian/modules/ngx_http_geoip2_module --add-module=$(CURDIR)/debian/modules/headers-more-nginx-module|g' rules
 sed -i 's|--http-scgi-temp-path=/var/cache/nginx/scgi_temp --user=nginx --group=nginx|--user=www-data --group=www-data|g' rules
 sed -i 's|--with-compat||g' rules
-sed -i 's|--with-http_addition_module --with-http_auth_request_module --with-http_dav_module --with-http_flv_module --with-http_gunzip_module --with-http_gzip_static_module --with-http_mp4_module --with-http_random_index_module --with-http_realip_module --with-http_secure_link_module --with-http_slice_module --with-http_ssl_module --with-http_stub_status_module --with-http_sub_module|--with-http_ssl_module|g' rules
 sed -i 's|--with-mail --with-mail_ssl_module --with-stream --with-stream_realip_module --with-stream_ssl_module --with-stream_ssl_preread_module|--with-pcre-jit --without-select_module --without-poll_module --without-http_autoindex_module --without-http_browser_module --without-http_charset_module --without-http_empty_gif_module --without-http_memcached_module --without-http_mirror_module --without-http_referer_module --without-http_split_clients_module --without-http_scgi_module --without-http_ssi_module|g' rules
 if [ -n "$FP_PATCH" ]; then
   sed -i 's|--with-http_ssl_module|--with-http_ssl_module --with-openssl=$(CURDIR)/debian/modules/openssl --add-module=$(CURDIR)/debian/modules/nginx-ssl-fingerprint|g' rules
 fi
 grep -q -- '--with-http_v2_module' rules
 grep -q -- '--with-http_v3_module' rules
+grep -q -- '--with-http_auth_request_module' rules
+grep -q -- '--with-http_realip_module' rules
+grep -q -- '--with-http_stub_status_module' rules
+grep -q -- '--add-module=$(CURDIR)/debian/modules/ngx_brotli' rules
+if grep -q -- '--with-stream' rules || grep -q -- '--with-mail' rules; then
+  echo 'upstream rules layout changed: stream/mail-strip sed did not match' >&2
+  exit 1
+fi
 if [ -n "$FP_PATCH" ]; then
   grep -q -- '--with-openssl=$(CURDIR)/debian/modules/openssl' rules
   grep -q -- '--add-module=$(CURDIR)/debian/modules/nginx-ssl-fingerprint' rules
