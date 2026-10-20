@@ -25,6 +25,7 @@ Debian packages of [NGINX](https://nginx.org/) (**stable branch**) with **HTTP/3
 - Brotli support, powered by [ngx_brotli](https://github.com/google/ngx_brotli)
 - GeoIP2 support, powered by [ngx_http_geoip2_module](https://github.com/leev/ngx_http_geoip2_module)
 - Headers More support, powered by [headers-more-nginx-module](https://github.com/openresty/headers-more-nginx-module)
+- Full standard http module set from the nginx.org packaging (`auth_request`, `realip`, `stub_status`, `gzip_static`, `secure_link`, and the rest) — same set as the mainline build
 - Remove mountains of useless modules to reduce attack surface
 
 Packages are built for **amd64** only.
@@ -100,7 +101,7 @@ OpenSSL tracks the **3.5 LTS** line and only uses versions that have an exact pa
 
 ## Removed modules
 
-- All modules that are not built by default, except `http_ssl_module`, `http_v2_module` and `http_v3_module`
+- Nothing from the standard packaging module set — all optional http modules (`addition`, `auth_request`, `dav`, `flv`, `gunzip`, `gzip_static`, `mp4`, `random_index`, `realip`, `secure_link`, `slice`, `stub_status`, `sub`, `v2`, `v3`) are built, matching the mainline build. Mainline-only modules (e.g. `http_json_module`) do not exist in the stable branch.
 - `http_autoindex_module`
 - `http_browser_module`
 - `http_charset_module`
