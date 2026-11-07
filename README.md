@@ -20,6 +20,7 @@ Debian packages of [NGINX](https://nginx.org/) (**stable branch**) with **HTTP/3
 
 - Based on latest [NGINX](https://nginx.org/) **stable** version (gets every security release; check `nginx -v`)
 - HTTP/3 and QUIC support, powered by native **OpenSSL 3.5 LTS** (patched; also enables `ssl_early_data` for QUIC — no quictls needed)
+- TLS certificate compression (RFC 8879: zlib, brotli, zstd) — set `ssl_certificate_compression on;`
 - JA3 / JA3 hash / JA4 TLS client fingerprinting, powered by [nginx-ssl-fingerprint](https://github.com/phuslu/nginx-ssl-fingerprint) (requires a patched OpenSSL + a patched nginx, applied automatically at build time)
 - HTTP/2 fingerprinting (`SETTINGS` frame, priority, pseudo-headers)
 - Brotli support, powered by [ngx_brotli](https://github.com/google/ngx_brotli)
@@ -36,6 +37,8 @@ Packages are built for **amd64** only.
 wget https://github.com/Conceded2/nginx-fp/releases/latest/download/nginx.deb
 sudo apt install ./nginx.deb
 ```
+
+Each release also carries `nginx-dbg.deb` (debug symbols for `nginx` and `nginx-debug`), only needed to turn a core dump into a backtrace.
 
 Note: `latest` occasionally points to a `vX.Y.Z-nofp` release (built without the fingerprint module — see [Patch tiering](#patch-tiering)). If you *require* fingerprinting, pin a release tag without the `-nofp` suffix.
 
@@ -89,14 +92,16 @@ http {
 | 2 | No exact patch, but a same-minor patch applies with fuzz | Fully fingerprinted; warning in release notes | `v1.30.7` |
 | 3 | No applicable nginx *or* OpenSSL patch | Built **without** the fingerprint module (system libssl) | `v1.30.7-nofp` |
 
-Security releases are **never delayed** by fingerprinting: tier 3 still ships the new nginx immediately, and the workflow fails loudly (after publishing) so the gap is visible. Once phuslu publishes the matching patch, the next daily build returns to a fully fingerprinted release.
+Security releases are **never delayed** by fingerprinting: tier 3 still ships the new nginx immediately, and the workflow fails loudly (after publishing) so the gap is visible. The same applies when the fingerprinted build fails for any other reason (a patch that applies but doesn't compile, a new OpenSSL that breaks, `patches/fp-87-quic-pool.patch` no longer applying): if the build contains a **new nginx version**, the workflow's fallback step rebuilds it without the fingerprint module and publishes it as `vX.Y.Z-nofp`, then marks the run failed. If the nginx version is already released (an ordinary daily rebuild), nothing is published, so a one-off failure never replaces a working fingerprinted release; the run just fails. Once the cause is fixed (or phuslu publishes the matching patch), the next build returns to a fully fingerprinted release.
 
-OpenSSL tracks the **3.5 LTS** line and only uses versions that have an exact patch (no fuzz on the crypto library).
+OpenSSL tracks the **3.5 LTS** line with no fuzz on the crypto library: the build uses the newest `openssl-3.5.x` release if the newest upstream OpenSSL patch applies to it with `--fuzz=0`, and otherwise falls back to the exact version that patch was written for. OpenSSL security releases are therefore picked up without waiting for a new patch.
+
+The fingerprint module also gets one local patch, `patches/fp-87-quic-pool.patch` (see Known caveats). It is applied with `--fuzz=0`; when it stops applying, the module changed upstream and the fix must be re-checked (or dropped, if upstream fixed it). Until then, the current release stays in place, and new nginx versions ship as `-nofp` (see [Patch tiering](#patch-tiering)): the unpatched module is never shipped.
 
 ## Known caveats
 
-- [phuslu/nginx-ssl-fingerprint#87](https://github.com/phuslu/nginx-ssl-fingerprint/issues/87): Chrome over HTTP/3/QUIC can intermittently report corrupt fingerprints (streams on one QUIC connection share `c->ssl`). Until fixed upstream, prefer trusting JA4 from HTTP/1.1/HTTP/2 traffic. JA4 correctly uses the `q` transport character for QUIC otherwise.
-- Tier 2 builds apply a patch written for an older point release with fuzz; it can (rarely) fail to compile even though it applies. If that happens, the workflow fails and no release is published — push a commit with an empty `.nofp` file to force a tier-3 build of the security release (see below).
+- [phuslu/nginx-ssl-fingerprint#87](https://github.com/phuslu/nginx-ssl-fingerprint/issues/87) (open upstream) is **fixed locally** by `patches/fp-87-quic-pool.patch`. On HTTP/3 the module cached the JA3/JA4 strings on the connection-shared `c->ssl` but allocated them from the per-stream pool, so every request after the first on a QUIC connection read freed memory (garbage fingerprints, leaked header bytes, occasional worker segfaults). The patch allocates them from the pool of the connection that owns the SSL object. Verified: 40/40 valid JA4 over one HTTP/3 connection (1/40 before). QUIC JA4 uses the `q` transport character.
+- Tier 2 builds apply a patch written for an older point release with fuzz; it can (rarely) fail to compile even though it applies. If that happens on a new nginx version, the fallback step publishes a `-nofp` build of it automatically and the run is marked failed.
 - Chromium rotates TLS extension ordering and ALPS codepoints, which shifts JA3/JA4 for the same binary over time — that's the fingerprint, working as intended.
 
 ## Removed modules
@@ -126,7 +131,7 @@ If you add `stream` back, build it **statically** (`--with-stream`, not `--with-
 
 ## Force a no-fingerprint build
 
-Add an empty `.nofp` file at the repository root and push to `main`. The next build skips all fingerprint patching (tier 3) and publishes a `vX.Y.Z-nofp` release. Delete the file to resume fingerprinted builds. This is the escape hatch if a fuzzed patch ever fails to compile right after a security release.
+Add an empty `.nofp` file at the repository root and push to `main`. The next build skips all fingerprint patching (tier 3) and publishes a `vX.Y.Z-nofp` release. Delete the file to resume fingerprinted builds. Failed fingerprinted builds don't need it (the workflow falls back to `-nofp` by itself); use it to turn fingerprinting off on purpose.
 
 ## Use in another distribution
 
@@ -149,6 +154,7 @@ http {
   ssl_certificate /path/to/cert_plus_intermediate;
   ssl_certificate_key /path/to/key;
   ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305; # change `ECDSA` to `RSA` if you use RSA certificate
+  ssl_certificate_compression on;
   ssl_early_data on; # safe against replay only if your app is idempotent-tolerant; OpenSSL 3.5 makes this work for QUIC too
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_session_cache shared:SSL:10m;
