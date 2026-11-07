@@ -6,6 +6,7 @@ on:
       - "**.sh"
       - Dockerfile
       - .nofp
+      - "patches/**"
   workflow_dispatch:
 jobs:
   test:
@@ -20,4 +21,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nginx-${{ env.nginx_version }}${{ env.fp_state }}-test
-          path: /home/runner/work/_temp/_github_home/nginx.deb
+          path: |
+            /home/runner/work/_temp/_github_home/nginx.deb
+            /home/runner/work/_temp/_github_home/nginx-dbg.deb
