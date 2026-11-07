@@ -1,0 +1,65 @@
+name: build-ech
+# Encrypted ClientHello variant (OpenSSL 4.0.x). Published as a pre-release that is never
+# marked latest, so the daily updater (releases/latest) keeps installing the main build.
+# No push trigger and a different schedule than build.yml, so both never commit to main at once.
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: build-ech-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: build-ech
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build
+        id: build
+        continue-on-error: true
+        uses: ./
+        env:
+          NGX_FP_VARIANT: ech
+      - name: Build without fingerprinting (fallback)
+        if: ${{ steps.build.outcome == 'failure' }}
+        uses: ./
+        env:
+          NGX_FP_VARIANT: ech
+          NGX_FP_FORCE_NOFP: "1"
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-${{ env.nginx_version }}${{ env.fp_state }}-ech
+          path: |
+            /home/runner/work/_temp/_github_home/nginx.deb
+            /home/runner/work/_temp/_github_home/nginx-dbg.deb
+            /home/runner/work/_temp/_github_home/openssl-ech
+      - name: Release
+        if: ${{ env.change }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            /home/runner/work/_temp/_github_home/nginx.deb
+            /home/runner/work/_temp/_github_home/nginx-dbg.deb
+            /home/runner/work/_temp/_github_home/openssl-ech
+          fail_on_unmatched_files: true
+          body: ${{ env.release_note }}
+          tag_name: v${{ env.nginx_version }}${{ env.fp_state }}-ech
+          prerelease: true
+          make_latest: false
+          generate_release_notes: false
+      - name: Update
+        if: ${{ env.change }}
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: Update ech hash and version
+          file_pattern: hash-ech nginx-version-ech
+      - name: Fingerprint missing
+        if: ${{ (env.fp_tier == '3' && env.change) || steps.build.outcome == 'failure' }}
+        run: |
+          echo "::error title=JA3/JA4 fingerprint omitted (ECH variant)::nginx ${{ env.nginx_version }} was built as v${{ env.nginx_version }}${{ env.fp_state }}-ech without the fingerprint module: $fp_note"
+          exit 1
