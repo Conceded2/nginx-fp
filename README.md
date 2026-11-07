@@ -131,11 +131,11 @@ If you add `stream` back, build it **statically** (`--with-stream`, not `--with-
 
 ## ECH variant (`-ech`)
 
-`.github/workflows/build-ech.yml` builds the same nginx against **OpenSSL 4.0.x**, the first OpenSSL with Encrypted ClientHello, so `ssl_ech_file`, `$ssl_ech_status` and `$ssl_ech_outer_server_name` work. It runs daily at 12:00 UTC (or by hand) and publishes `vX.Y.Z-ech` as a **pre-release that is never marked latest**, so `releases/latest` (and the daily updater) keeps pointing at the main build. State files: `hash-ech`, `nginx-version-ech`.
+`.github/workflows/build-ech.yml` builds the same nginx against **OpenSSL 4.1.x** (OpenSSL gained Encrypted ClientHello in 4.0; 4.1 is supported until 2027-11-23, the next LTS is due April 2027), so `ssl_ech_file`, `$ssl_ech_status` and `$ssl_ech_outer_server_name` work. It runs daily at 12:00 UTC (or by hand) and publishes `vX.Y.Z-ech` as a **pre-release that is never marked latest**, so `releases/latest` (and the daily updater) keeps pointing at the main build. State files: `hash-ech`, `nginx-version-ech`.
 
-- The fingerprint module has no OpenSSL 4.0 patch upstream; `patches/openssl-4.0.3.patch` is this repo's port of `openssl-3.6.2.patch` (the three extra extension entries now sit after ECH's own `outer_extensions` and carry 4.0's `ech_handling` field). The build prefers an upstream `openssl-4.0.*.patch` once one exists.
+- The fingerprint module has no OpenSSL 4.x patch upstream; `patches/openssl-4.1.0.patch` is this repo's port of `openssl-3.6.2.patch` (the three extra extension entries now sit after ECH's own `outer_extensions`, before 4.1's GREASE slots, and carry the `ech_handling` field). The build prefers an upstream `openssl-4.1.*.patch` once one exists.
 - With ECH, OpenSSL decrypts the inner ClientHello before the fingerprint callback runs, so **JA4 describes the inner ClientHello** (the real client), not the generic outer one.
-- Each `-ech` release also carries `openssl-ech`, the OpenSSL 4.0 CLI from the same build, for key generation: `openssl-ech ech -public_name example.com -out ech.pem`.
+- Each `-ech` release also carries `openssl-ech`, the OpenSSL 4.1 CLI from the same build, for key generation: `openssl-ech ech -public_name example.com -out ech.pem`.
 
 ```nginx
 http {

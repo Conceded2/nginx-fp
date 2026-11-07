@@ -8,11 +8,12 @@ if [ -f /github/workspace/.nofp ]; then
 elif [ -n "${NGX_FP_FORCE_NOFP:-}" ]; then
   NOFP_REASON='the fingerprinted build of this new nginx version failed (see the failed Build step), so this fallback build omits the fingerprint module'
 fi
-# Variant: default = OpenSSL 3.5 LTS; NGX_FP_VARIANT=ech = OpenSSL 4.0.x with Encrypted ClientHello.
+# Variant: default = OpenSSL 3.5 LTS; NGX_FP_VARIANT=ech = OpenSSL 4.1.x with Encrypted ClientHello
+# (non-LTS, supported until 2027-11-23; move SSL_LINE to the April-2027 LTS line when it ships).
 SSL_LINE=3.5
 SUFFIX=
 if [ "${NGX_FP_VARIANT:-}" = ech ]; then
-  SSL_LINE=4.0
+  SSL_LINE=4.1
   SUFFIX=-ech
 fi
 echo Install dependencies.
@@ -106,7 +107,7 @@ else
     fi
   fi
   if [ -n "$FP_PATCH" ]; then
-    # OpenSSL patch: the module's own for this line, else this repo's port (patches/openssl-4.0.x.patch).
+    # OpenSSL patch: the module's own for this line, else this repo's port (patches/openssl-4.1.x.patch).
     SSL_PATCH=$(find "$FP_MODULE/patches" -maxdepth 1 -name "openssl-$SSL_LINE.*.patch" | sort -V | tail -n1)
     if [ -z "$SSL_PATCH" ] && [ -d /github/workspace/patches ]; then
       SSL_PATCH=$(find /github/workspace/patches -maxdepth 1 -name "openssl-$SSL_LINE.*.patch" | sort -V | tail -n1)
@@ -140,7 +141,7 @@ else
   fi
 fi
 if [ -n "$SUFFIX" ] && [ -z "$SSL_TAG" ] && [ -n "$SSL_LATEST" ]; then
-  # ECH needs a static OpenSSL 4.0 even when the fingerprint module can't be applied.
+  # ECH needs a static OpenSSL 4.x even when the fingerprint module can't be applied.
   echo Fetch OpenSSL $SSL_LATEST source code without fingerprint patch.
   rm -rf openssl
   git clone --depth 1 -b openssl-$SSL_LATEST https://github.com/openssl/openssl > /dev/null 2>&1
@@ -204,7 +205,7 @@ cd ..
 cp nginx_*.deb nginx.deb
 cp nginx-dbg_*.deb nginx-dbg.deb
 if [ -n "$SUFFIX" ]; then
-  # OpenSSL 4.0 CLI from the same build, for "openssl-ech ech -public_name ..." key generation.
+  # OpenSSL 4.x CLI from the same build, for "openssl-ech ech -public_name ..." key generation.
   cp nginx-*/debian/modules/openssl/.openssl/bin/openssl openssl-ech
 fi
 hash=$(sha256sum nginx.deb | awk '{print $1}')
