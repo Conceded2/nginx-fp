@@ -1,12 +1,19 @@
 set -e
 cd /github/home
 # A fallback run (NGX_FP_FORCE_NOFP=1) reuses /github/home after a failed fingerprinted build.
-rm -rf nginx-[0-9]* nginx_* nginx.deb nginx-dbg.deb
+rm -rf nginx-[0-9]* nginx_* nginx.deb nginx-dbg.deb openssl-ech
 NOFP_REASON=
 if [ -f /github/workspace/.nofp ]; then
   NOFP_REASON='forced no-fingerprint build via .nofp marker'
 elif [ -n "${NGX_FP_FORCE_NOFP:-}" ]; then
   NOFP_REASON='the fingerprinted build of this new nginx version failed (see the failed Build step), so this fallback build omits the fingerprint module'
+fi
+# Variant: default = OpenSSL 3.5 LTS; NGX_FP_VARIANT=ech = OpenSSL 4.0.x with Encrypted ClientHello.
+SSL_LINE=3.5
+SUFFIX=
+if [ "${NGX_FP_VARIANT:-}" = ech ]; then
+  SSL_LINE=4.0
+  SUFFIX=-ech
 fi
 echo Install dependencies.
 apt-get update > /dev/null 2>&1
@@ -31,8 +38,9 @@ NGINX_MINOR=${NGINX_VERSION%.*}
 if [ -n "${NGX_FP_FORCE_NOFP:-}" ]; then
   # Fall back to -nofp only to ship a NEW nginx version on time; never trade a working
   # fingerprinted release of the same version for a -nofp one.
-  LAST_VERSION=$(cat /github/workspace/nginx-version 2>/dev/null || true)
-  if [ "$NGINX_VERSION" = "${LAST_VERSION%-nofp}" ]; then
+  LAST_VERSION=$(cat /github/workspace/nginx-version$SUFFIX 2>/dev/null || true)
+  LAST_UPSTREAM=${LAST_VERSION%-ech}
+  if [ "$NGINX_VERSION" = "${LAST_UPSTREAM%-nofp}" ]; then
     echo "::error title=Fingerprinted build failed::nginx $NGINX_VERSION is already released (v$LAST_VERSION), so no -nofp fallback is published and servers keep their current build. See the failed Build step."
     exit 1
   fi
@@ -72,11 +80,14 @@ cd ../../../..
 git clone --depth 1 --recursive https://github.com/leev/ngx_http_geoip2_module > /dev/null 2>&1
 git clone --depth 1 --recursive https://github.com/openresty/headers-more-nginx-module > /dev/null 2>&1
 echo Select fingerprint patches.
+SSL_LATEST=$(git ls-remote --tags --refs https://github.com/openssl/openssl "openssl-$SSL_LINE.*" \
+| sed 's|.*refs/tags/openssl-||' | grep -E "^$SSL_LINE\.[0-9]+$" | sort -V | tail -n1)
 FP_MODULE=nginx-ssl-fingerprint
 FP_TIER=3
 FP_PATCH=
 FP_NOTE='no applicable patch; JA3/JA4 fingerprinting omitted'
 SSL_TAG=
+SSL_PATCH_TAG=
 if [ -n "$NOFP_REASON" ]; then
   FP_NOTE=$NOFP_REASON
 else
@@ -95,12 +106,14 @@ else
     fi
   fi
   if [ -n "$FP_PATCH" ]; then
-    SSL_PATCH_TAG=$(cd "$FP_MODULE/patches" && find . -maxdepth 1 -name 'openssl-3.5.*.patch' -printf '%f\n' \
-    | sed 's/^openssl-\(.*\)\.patch$/\1/' | sort -V | tail -n1)
-    SSL_TAG=
-    if [ -n "$SSL_PATCH_TAG" ]; then
-      SSL_LATEST=$(git ls-remote --tags --refs https://github.com/openssl/openssl 'openssl-3.5.*' \
-      | sed -n 's|.*refs/tags/openssl-\(3\.5\.[0-9]*\)$|\1|p' | sort -V | tail -n1)
+    # OpenSSL patch: the module's own for this line, else this repo's port (patches/openssl-4.0.x.patch).
+    SSL_PATCH=$(find "$FP_MODULE/patches" -maxdepth 1 -name "openssl-$SSL_LINE.*.patch" | sort -V | tail -n1)
+    if [ -z "$SSL_PATCH" ] && [ -d /github/workspace/patches ]; then
+      SSL_PATCH=$(find /github/workspace/patches -maxdepth 1 -name "openssl-$SSL_LINE.*.patch" | sort -V | tail -n1)
+    fi
+    if [ -n "$SSL_PATCH" ]; then
+      SSL_PATCH_TAG=$(basename "$SSL_PATCH" .patch)
+      SSL_PATCH_TAG=${SSL_PATCH_TAG#openssl-}
       for CAND in $(printf '%s\n' "$SSL_LATEST" "$SSL_PATCH_TAG" | awk 'NF && !seen[$0]++'); do
         FUZZ=0
         if [ "$CAND" = "$SSL_PATCH_TAG" ]; then
@@ -109,8 +122,8 @@ else
         echo Fetch OpenSSL $CAND source code.
         rm -rf openssl
         git clone --depth 1 -b openssl-$CAND https://github.com/openssl/openssl > /dev/null 2>&1 || continue
-        if patch -p1 --fuzz=$FUZZ --dry-run -d openssl < "$FP_MODULE/patches/openssl-$SSL_PATCH_TAG.patch" > /dev/null 2>&1; then
-          patch -p1 --fuzz=$FUZZ -d openssl < "$FP_MODULE/patches/openssl-$SSL_PATCH_TAG.patch" > /dev/null 2>&1
+        if patch -p1 --fuzz=$FUZZ --dry-run -d openssl < "$SSL_PATCH" > /dev/null 2>&1; then
+          patch -p1 --fuzz=$FUZZ -d openssl < "$SSL_PATCH" > /dev/null 2>&1
           SSL_TAG=$CAND
           break
         fi
@@ -119,12 +132,23 @@ else
     if [ -z "$SSL_TAG" ]; then
       FP_PATCH=
       FP_TIER=3
-      FP_NOTE='no applicable OpenSSL 3.5.x patch; JA3/JA4 fingerprinting omitted'
+      FP_NOTE="no applicable OpenSSL $SSL_LINE.x patch; JA3/JA4 fingerprinting omitted"
       rm -rf openssl
     else
       patch -p1 --fuzz=3 -d ../.. < "$FP_PATCH" > /dev/null 2>&1
     fi
   fi
+fi
+if [ -n "$SUFFIX" ] && [ -z "$SSL_TAG" ] && [ -n "$SSL_LATEST" ]; then
+  # ECH needs a static OpenSSL 4.0 even when the fingerprint module can't be applied.
+  echo Fetch OpenSSL $SSL_LATEST source code without fingerprint patch.
+  rm -rf openssl
+  git clone --depth 1 -b openssl-$SSL_LATEST https://github.com/openssl/openssl > /dev/null 2>&1
+  SSL_TAG=$SSL_LATEST
+fi
+if [ -n "$SUFFIX" ] && [ -z "$SSL_TAG" ]; then
+  echo "::error title=ECH build::no OpenSSL $SSL_LINE.x source available"
+  exit 1
 fi
 FP_STATE=
 if [ -z "$FP_PATCH" ]; then
@@ -143,6 +167,10 @@ sed -i 's|--with-compat||g' rules
 sed -i 's|--with-mail --with-mail_ssl_module --with-stream --with-stream_realip_module --with-stream_ssl_module --with-stream_ssl_preread_module|--with-pcre-jit --without-select_module --without-poll_module --without-http_autoindex_module --without-http_browser_module --without-http_charset_module --without-http_empty_gif_module --without-http_memcached_module --without-http_mirror_module --without-http_referer_module --without-http_split_clients_module --without-http_scgi_module --without-http_ssi_module|g' rules
 if [ -n "$FP_PATCH" ]; then
   sed -i 's|--with-http_ssl_module|--with-http_ssl_module --with-openssl=$(CURDIR)/debian/modules/openssl --with-openssl-opt="zlib enable-brotli enable-zstd --with-brotli-include=$(CURDIR)/debian/modules/ngx_brotli/deps/brotli/c/include --with-brotli-lib=$(CURDIR)/debian/modules/ngx_brotli/deps/brotli/out" --add-module=$(CURDIR)/debian/modules/nginx-ssl-fingerprint|g' rules
+elif [ -n "$SSL_TAG" ]; then
+  sed -i 's|--with-http_ssl_module|--with-http_ssl_module --with-openssl=$(CURDIR)/debian/modules/openssl --with-openssl-opt="zlib enable-brotli enable-zstd --with-brotli-include=$(CURDIR)/debian/modules/ngx_brotli/deps/brotli/c/include --with-brotli-lib=$(CURDIR)/debian/modules/ngx_brotli/deps/brotli/out"|g' rules
+fi
+if [ -n "$SSL_TAG" ]; then
   sed -i 's|^\( *\)CORE_LIBS="$CORE_LIBS $OPENSSL/.openssl/lib/libcrypto.a"$|&\n\1CORE_LIBS="$CORE_LIBS -lbrotlienc -lbrotlidec -lbrotlicommon -lzstd -lz"|' ../auto/lib/openssl/conf
 fi
 grep -q -- '--with-http_v2_module' rules
@@ -155,28 +183,37 @@ if grep -q -- '--with-stream' rules || grep -q -- '--with-mail' rules; then
   echo 'upstream rules layout changed: stream/mail-strip sed did not match' >&2
   exit 1
 fi
-if [ -n "$FP_PATCH" ]; then
+if [ -n "$SSL_TAG" ]; then
   grep -q -- '--with-openssl=$(CURDIR)/debian/modules/openssl' rules
-  grep -q -- '--add-module=$(CURDIR)/debian/modules/nginx-ssl-fingerprint' rules
   grep -q -- '--with-openssl-opt="zlib enable-brotli enable-zstd' rules
   grep -q -- '-lbrotlienc -lbrotlidec -lbrotlicommon -lzstd -lz' ../auto/lib/openssl/conf
   test -f modules/ngx_brotli/deps/brotli/out/libbrotlidec.a
-else
-  if grep -q 'debian/modules/openssl' rules || grep -q 'nginx-ssl-fingerprint' rules; then
-    echo 'fingerprint flags present in a no-fingerprint build' >&2
-    exit 1
-  fi
+elif grep -q 'debian/modules/openssl' rules; then
+  echo 'static OpenSSL flags present in a system-libssl build' >&2
+  exit 1
+fi
+if [ -n "$FP_PATCH" ]; then
+  grep -q -- '--add-module=$(CURDIR)/debian/modules/nginx-ssl-fingerprint' rules
+elif grep -q 'nginx-ssl-fingerprint' rules; then
+  echo 'fingerprint flags present in a no-fingerprint build' >&2
+  exit 1
 fi
 cd ..
 dpkg-buildpackage -b > /dev/null 2>&1
 cd ..
 cp nginx_*.deb nginx.deb
 cp nginx-dbg_*.deb nginx-dbg.deb
+if [ -n "$SUFFIX" ]; then
+  # OpenSSL 4.0 CLI from the same build, for "openssl-ech ech -public_name ..." key generation.
+  cp nginx-*/debian/modules/openssl/.openssl/bin/openssl openssl-ech
+fi
 hash=$(sha256sum nginx.deb | awk '{print $1}')
+HASH_FILE=/github/workspace/hash$SUFFIX
+VERSION_FILE=/github/workspace/nginx-version$SUFFIX
 change=
-if [[ $hash != $(cat /github/workspace/hash) ]]; then
-  echo $hash > /github/workspace/hash
-  echo $NGINX_VERSION$FP_STATE > /github/workspace/nginx-version
+if [[ $hash != $(cat $HASH_FILE 2>/dev/null) ]]; then
+  echo $hash > $HASH_FILE
+  echo $NGINX_VERSION$FP_STATE$SUFFIX > $VERSION_FILE
   change=1
   echo This is a new version.
 else
@@ -188,17 +225,24 @@ fi
   echo "fp_state=$FP_STATE"
   echo "fp_tier=$FP_TIER"
   echo "fp_note=$FP_NOTE"
+  echo "variant=$SUFFIX"
   echo "change=$change"
 } >> $GITHUB_ENV
 {
   echo "release_note<<NOTE_EOF"
-  echo "nginx $NGINX_VERSION (stable branch) with HTTP/3/QUIC and JA3/JA4 fingerprinting."
+  if [ -n "$SUFFIX" ]; then
+    echo "nginx $NGINX_VERSION (stable branch) with HTTP/3/QUIC, JA3/JA4 fingerprinting and Encrypted ClientHello (ssl_ech_file). ECH variant: pre-release, never marked latest; openssl-ech is the matching OpenSSL CLI for ECH key generation."
+  else
+    echo "nginx $NGINX_VERSION (stable branch) with HTTP/3/QUIC and JA3/JA4 fingerprinting."
+  fi
   echo ""
   echo "- Artifact SHA256: $hash"
   echo "- Fingerprint tier: $FP_TIER - $FP_NOTE"
-  if [ -n "$SSL_TAG" ]; then
+  if [ -n "$FP_PATCH" ]; then
     echo "- OpenSSL: $SSL_TAG (patched for client-hello capture with openssl-$SSL_PATCH_TAG.patch; zlib/brotli/zstd certificate compression)"
     echo "- nginx-ssl-fingerprint: local fix for issue 87 (HTTP/3 dangling pointer)"
+  elif [ -n "$SSL_TAG" ]; then
+    echo "- OpenSSL: $SSL_TAG (static, unpatched; zlib/brotli/zstd certificate compression; fingerprint module omitted)"
   else
     echo "- OpenSSL: system libssl (fingerprint module omitted)"
   fi

@@ -129,6 +129,23 @@ For example, if you want to add `http_scgi_module` back, you need to remove `--w
 
 If you add `stream` back, build it **statically** (`--with-stream`, not `--with-stream=dynamic`) — see [phuslu/nginx-ssl-fingerprint#89](https://github.com/phuslu/nginx-ssl-fingerprint/issues/89).
 
+## ECH variant (`-ech`)
+
+`.github/workflows/build-ech.yml` builds the same nginx against **OpenSSL 4.0.x**, the first OpenSSL with Encrypted ClientHello, so `ssl_ech_file`, `$ssl_ech_status` and `$ssl_ech_outer_server_name` work. It runs daily at 12:00 UTC (or by hand) and publishes `vX.Y.Z-ech` as a **pre-release that is never marked latest**, so `releases/latest` (and the daily updater) keeps pointing at the main build. State files: `hash-ech`, `nginx-version-ech`.
+
+- The fingerprint module has no OpenSSL 4.0 patch upstream; `patches/openssl-4.0.3.patch` is this repo's port of `openssl-3.6.2.patch` (the three extra extension entries now sit after ECH's own `outer_extensions` and carry 4.0's `ech_handling` field). The build prefers an upstream `openssl-4.0.*.patch` once one exists.
+- With ECH, OpenSSL decrypts the inner ClientHello before the fingerprint callback runs, so **JA4 describes the inner ClientHello** (the real client), not the generic outer one.
+- Each `-ech` release also carries `openssl-ech`, the OpenSSL 4.0 CLI from the same build, for key generation: `openssl-ech ech -public_name example.com -out ech.pem`.
+
+```nginx
+http {
+  ssl_ech_file /etc/nginx/ech/current.pem;   # first file: also sent as retry_configs
+  ssl_ech_file /etc/nginx/ech/previous.pem;  # previous key, still accepted while DNS caches expire
+}
+```
+
+The `public_name` must be a name one of your servers has a valid certificate for (clients authenticate it when ECH is rejected). Publish the ECHConfigList as `ech="..."` in each name's HTTPS DNS record.
+
 ## Force a no-fingerprint build
 
 Add an empty `.nofp` file at the repository root and push to `main`. The next build skips all fingerprint patching (tier 3) and publishes a `vX.Y.Z-nofp` release. Delete the file to resume fingerprinted builds. Failed fingerprinted builds don't need it (the workflow falls back to `-nofp` by itself); use it to turn fingerprinting off on purpose.
