@@ -1,5 +1,5 @@
 name: build-ech
-# Encrypted ClientHello variant (OpenSSL 4.0.x). Published as a pre-release that is never
+# Encrypted ClientHello variant (OpenSSL 4.1.x, see SSL_LINE in build.sh). Published as a pre-release that is never
 # marked latest, so the daily updater (releases/latest) keeps installing the main build.
 # No push trigger and a different schedule than build.yml, so both never commit to main at once.
 on:
