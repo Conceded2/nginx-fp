@@ -6,6 +6,7 @@ Debian packages of [NGINX](https://nginx.org/) (**stable branch**) with **HTTP/3
 
 - [Features](#features)
 - [Usage](#usage)
+- [Versioning](#versioning)
 - [Exposed variables](#exposed-variables)
 - [Fingerprinting example](#fingerprinting-example)
 - [Patch tiering](#patch-tiering)
@@ -40,7 +41,18 @@ sudo apt install ./nginx.deb
 
 Each release also carries `nginx-dbg.deb` (debug symbols for `nginx` and `nginx-debug`), only needed to turn a core dump into a backtrace.
 
-Note: `latest` occasionally points to a `vX.Y.Z-nofp` release (built without the fingerprint module — see [Patch tiering](#patch-tiering)). If you *require* fingerprinting, pin a release tag without the `-nofp` suffix.
+Note: `latest` occasionally points to a release built without the fingerprint module (its title ends in `no fingerprinting` — see [Patch tiering](#patch-tiering)). Check an installed binary with `nginx -V 2>&1 | grep -c nginx-ssl-fingerprint` (`1` = fingerprinted). If you *require* fingerprinting, pin a release whose title doesn't say `no fingerprinting`.
+
+## Versioning
+
+Releases have this repo's own version number, not nginx's (the same scheme as [nginx-http3](https://github.com/Conceded2/nginx-http3)). The title shows the nginx version inside, e.g. `v1.0.0 (nginx 1.30.7)`.
+
+- The first release is `v1.0.0`.
+- A push to `main` that changes the build (`build.sh`, `Dockerfile`, `patches/`, `.nofp`) bumps the minor number: `v1.0.3` → `v1.1.0`.
+- Any other build that produces a different `.deb` (the daily run picking up a new nginx point release, a new OpenSSL 3.5.x or new module code) bumps the patch number: `v1.0.0` → `v1.0.1`.
+- Builds whose `.deb` is unchanged publish nothing.
+
+State files written by the workflow: `hash` (SHA256 of the last released `nginx.deb`), `nginx-version` (its nginx version, with `-nofp` when built without fingerprinting) and `release-version` (the last release number). Don't edit them by hand. Each release's notes carry the `.deb` SHA256, so an updater should compare SHA256s, not tags.
 
 ## Exposed variables
 
@@ -86,22 +98,25 @@ http {
 
 [nginx-ssl-fingerprint](https://github.com/phuslu/nginx-ssl-fingerprint) needs version-specific patches for both nginx and OpenSSL, which upstream publishes shortly after each release. The build resolves a "tier" automatically:
 
-| Tier | Condition | Result | Release tag |
+| Tier | Condition | Result | Release title |
 |---|---|---|---|
-| 1 | Exact patch exists for the nginx version | Fully fingerprinted | `v1.30.7` |
-| 2 | No exact patch, but a same-minor patch applies with fuzz | Fully fingerprinted; warning in release notes | `v1.30.7` |
-| 3 | No applicable nginx *or* OpenSSL patch | Built **without** the fingerprint module (system libssl) | `v1.30.7-nofp` |
+| 1 | Exact patch exists for the nginx version | Fully fingerprinted | `v1.0.1 (nginx 1.30.7)` |
+| 2 | No exact patch, but a same-minor patch applies with fuzz | Fully fingerprinted; warning in release notes | `v1.0.1 (nginx 1.30.7)` |
+| 3 | No applicable nginx *or* OpenSSL patch | Built **without** the fingerprint module (system libssl) | `v1.0.1 (nginx 1.30.7, no fingerprinting)` |
 
-Security releases are **never delayed** by fingerprinting: tier 3 still ships the new nginx immediately, and the workflow fails loudly (after publishing) so the gap is visible. The same applies when the fingerprinted build fails for any other reason (a patch that applies but doesn't compile, a new OpenSSL that breaks, `patches/fp-87-quic-pool.patch` no longer applying): if the build contains a **new nginx version**, the workflow's fallback step rebuilds it without the fingerprint module and publishes it as `vX.Y.Z-nofp`, then marks the run failed. If the nginx version is already released (an ordinary daily rebuild), nothing is published, so a one-off failure never replaces a working fingerprinted release; the run just fails. Once the cause is fixed (or phuslu publishes the matching patch), the next build returns to a fully fingerprinted release.
+Security releases are **never delayed** by fingerprinting: tier 3 still ships the new nginx immediately, and the workflow fails loudly (after publishing) so the gap is visible. The same applies when the fingerprinted build fails for any other reason (a patch that applies but doesn't compile, a new OpenSSL that breaks, `patches/fp-87-quic-pool.patch` no longer applying): if the build contains a **new nginx version**, the workflow's fallback step rebuilds it without the fingerprint module and publishes it as a `no fingerprinting` release, then marks the run failed. If the nginx version is already released (an ordinary daily rebuild), nothing is published, so a one-off failure never replaces a working fingerprinted release; the run just fails. Once the cause is fixed (or phuslu publishes the matching patch), the next build returns to a fully fingerprinted release.
+
+The fingerprint module itself is **pinned** to one commit (`FP_COMMIT` in `build.sh`), so its nginx/OpenSSL patches are the ones from that commit. Upstream changes never reach a build by surprise; see [Known caveats](#known-caveats) for why.
 
 OpenSSL tracks the **3.5 LTS** line with no fuzz on the crypto library: the build uses the newest `openssl-3.5.x` release if the newest upstream OpenSSL patch applies to it with `--fuzz=0`, and otherwise falls back to the exact version that patch was written for. OpenSSL security releases are therefore picked up without waiting for a new patch.
 
-The fingerprint module also gets one local patch, `patches/fp-87-quic-pool.patch` (see Known caveats). It is applied with `--fuzz=0`; when it stops applying, the module changed upstream and the fix must be re-checked (or dropped, if upstream fixed it). Until then, the current release stays in place, and new nginx versions ship as `-nofp` (see [Patch tiering](#patch-tiering)): the unpatched module is never shipped.
+The fingerprint module also gets one local patch, `patches/fp-87-quic-pool.patch` (see Known caveats). It is applied with `--fuzz=0` to the pinned commit; it only stops applying when `FP_COMMIT` is moved. Until that is sorted out, the current release stays in place, and new nginx versions ship without fingerprinting (see [Patch tiering](#patch-tiering)): the unpatched module is never shipped.
 
 ## Known caveats
 
-- [phuslu/nginx-ssl-fingerprint#87](https://github.com/phuslu/nginx-ssl-fingerprint/issues/87) (open upstream) is **fixed locally** by `patches/fp-87-quic-pool.patch`. On HTTP/3 the module cached the JA3/JA4 strings on the connection-shared `c->ssl` but allocated them from the per-stream pool, so every request after the first on a QUIC connection read freed memory (garbage fingerprints, leaked header bytes, occasional worker segfaults). The patch allocates them from the pool of the connection that owns the SSL object. Verified: 40/40 valid JA4 over one HTTP/3 connection (1/40 before). QUIC JA4 uses the `q` transport character.
-- Tier 2 builds apply a patch written for an older point release with fuzz; it can (rarely) fail to compile even though it applies. If that happens on a new nginx version, the fallback step publishes a `-nofp` build of it automatically and the run is marked failed.
+- **The fingerprint module is pinned at [`e72f932`](https://github.com/phuslu/nginx-ssl-fingerprint/commit/e72f932b630717939b508b58e5b4a48ec014adf3) (2026-09-02).** On 2026-11-11 upstream changed how the fingerprints are computed: extensions are taken from the raw ClientHello (so unknown ones such as ECH GREASE count too), signature algorithms keep wire order, and the JA3 string sorts its extensions. That shifts JA4 part a **and** part c for every browser (measured: Edge 157 `t13d1514h2_8daaf6152771_ee79ac1fafef` → `t13d1516h2_8daaf6152771_806a8c22fdea`, Firefox 160 `t13d1515h2_…_74f33b40d17f` → `t13d1517h2_…_3cbfd9057e0d`; curl, Python and Schannel change part c), and every JA3 hash. Rules that match exact JA4 values would silently stop matching. The pinned commit's values are not the canonical FoxIO JA4 (part c hashes sorted signature algorithms), so don't compare them with public JA4 databases. Moving the pin means migrating those rules at the same time.
+- [phuslu/nginx-ssl-fingerprint#87](https://github.com/phuslu/nginx-ssl-fingerprint/issues/87) is **fixed locally** for the pinned commit by `patches/fp-87-quic-pool.patch` (upstream has its own fix since 2026-11-11, PR 94, which comes with the changes above). On HTTP/3 the module cached the JA3/JA4 strings on the connection-shared `c->ssl` but allocated them from the per-stream pool, so every request after the first on a QUIC connection read freed memory (garbage fingerprints, leaked header bytes, occasional worker segfaults). The patch allocates them from the pool of the connection that owns the SSL object. Verified: 40/40 valid JA4 over one HTTP/3 connection (1/40 before). QUIC JA4 uses the `q` transport character.
+- Tier 2 builds apply a patch written for an older point release with fuzz; it can (rarely) fail to compile even though it applies. If that happens on a new nginx version, the fallback step publishes a `no fingerprinting` build of it automatically and the run is marked failed.
 - Chromium rotates TLS extension ordering and ALPS codepoints, which shifts JA3/JA4 for the same binary over time — that's the fingerprint, working as intended.
 
 ## Removed modules
@@ -129,26 +144,9 @@ For example, if you want to add `http_scgi_module` back, you need to remove `--w
 
 If you add `stream` back, build it **statically** (`--with-stream`, not `--with-stream=dynamic`) — see [phuslu/nginx-ssl-fingerprint#89](https://github.com/phuslu/nginx-ssl-fingerprint/issues/89).
 
-## ECH variant (`-ech`)
-
-`.github/workflows/build-ech.yml` builds the same nginx against **OpenSSL 4.1.x** (OpenSSL gained Encrypted ClientHello in 4.0; 4.1 is supported until 2027-11-23, the next LTS is due April 2027), so `ssl_ech_file`, `$ssl_ech_status` and `$ssl_ech_outer_server_name` work. It runs daily at 12:00 UTC (or by hand) and publishes `vX.Y.Z-ech` as a **pre-release that is never marked latest**, so `releases/latest` (and the daily updater) keeps pointing at the main build. State files: `hash-ech`, `nginx-version-ech`.
-
-- The fingerprint module has no OpenSSL 4.x patch upstream; `patches/openssl-4.1.0.patch` is this repo's port of `openssl-3.6.2.patch` (the three extra extension entries now sit after ECH's own `outer_extensions`, before 4.1's GREASE slots, and carry the `ech_handling` field). The build prefers an upstream `openssl-4.1.*.patch` once one exists.
-- With ECH, OpenSSL decrypts the inner ClientHello before the fingerprint callback runs, so **JA4 describes the inner ClientHello** (the real client), not the generic outer one.
-- Each `-ech` release also carries `openssl-ech`, the OpenSSL 4.1 CLI from the same build, for key generation: `openssl-ech ech -public_name example.com -out ech.pem`.
-
-```nginx
-http {
-  ssl_ech_file /etc/nginx/ech/current.pem;   # first file: also sent as retry_configs
-  ssl_ech_file /etc/nginx/ech/previous.pem;  # previous key, still accepted while DNS caches expire
-}
-```
-
-The `public_name` must be a name one of your servers has a valid certificate for (clients authenticate it when ECH is rejected). Publish the ECHConfigList as `ech="..."` in each name's HTTPS DNS record.
-
 ## Force a no-fingerprint build
 
-Add an empty `.nofp` file at the repository root and push to `main`. The next build skips all fingerprint patching (tier 3) and publishes a `vX.Y.Z-nofp` release. Delete the file to resume fingerprinted builds. Failed fingerprinted builds don't need it (the workflow falls back to `-nofp` by itself); use it to turn fingerprinting off on purpose.
+Add an empty `.nofp` file at the repository root and push to `main`. The next build skips all fingerprint patching (tier 3) and publishes a `no fingerprinting` release. Delete the file to resume fingerprinted builds. Failed fingerprinted builds don't need it (the workflow falls back to a no-fingerprint build by itself); use it to turn fingerprinting off on purpose.
 
 ## Use in another distribution
 
