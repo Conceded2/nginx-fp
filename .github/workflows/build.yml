@@ -47,7 +47,8 @@ jobs:
             /home/runner/work/_temp/_github_home/nginx-dbg.deb
           fail_on_unmatched_files: true
           body: ${{ env.release_note }}
-          tag_name: v${{ env.nginx_version }}${{ env.fp_state }}
+          tag_name: v${{ env.release_version }}
+          name: ${{ env.release_title }}
           make_latest: true
           generate_release_notes: false
       - name: Update
@@ -58,5 +59,9 @@ jobs:
       - name: Fingerprint missing
         if: ${{ (env.fp_tier == '3' && env.change) || steps.build.outcome == 'failure' }}
         run: |
-          echo "::error title=JA3/JA4 fingerprint omitted::nginx ${{ env.nginx_version }} was built as v${{ env.nginx_version }}${{ env.fp_state }} without the fingerprint module: $fp_note. Check the Build step log and https://github.com/phuslu/nginx-ssl-fingerprint/tree/master/patches"
+          if [ -n "$change" ] && [ -n "$fp_state" ]; then
+            echo "::error title=JA3/JA4 fingerprint omitted::nginx $nginx_version was published as v$release_version without the fingerprint module: $fp_note. Check the Build step log and https://github.com/phuslu/nginx-ssl-fingerprint/tree/master/patches"
+          else
+            echo "::error title=Fingerprinted build failed::nothing was published, servers keep their current release. See the failed Build step."
+          fi
           exit 1
